@@ -1,8 +1,9 @@
-require('dotenv').config();
+require("dotenv").config();
 import express from "express";
 import configViewEngine from "./config/viewEngine";
 import initWebRoutes from "./routes/web";
 import bodyParser from "body-parser";
+
 
 let app = express();
 
@@ -13,11 +14,11 @@ app.use(bodyParser.urlencoded({ extended: true }));
 //config view engine
 configViewEngine(app);
 
-//config web routes
+//init web routes
 initWebRoutes(app);
 
 let port = process.env.PORT || 8080;
 
 app.listen(port, () => {
-    console.log(`Messenger bot is running at the port ${port}`);
+    console.log(`Messenger tech shop is running at the port ${port}`);
 });

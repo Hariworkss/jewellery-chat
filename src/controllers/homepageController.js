@@ -1,15 +1,18 @@
 require("dotenv").config();
-import request from "request";
+import homepageService from "../services/homepageService";
+import chatbotService from "../services/chatbotService";
+import templateMessage from "../services/templateMessage";
 
 const MY_VERIFY_TOKEN = process.env.MY_VERIFY_TOKEN;
-const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 
-let getHomepage = (req, res) => {
-    return res.render("homepage.ejs");
+let getHomePage = (req, res) => {
+    let facebookAppId = process.env.FACEBOOK_APP_ID;
+    return res.render("homepage.ejs", {
+        facebookAppId: facebookAppId
+    })
 };
 
 let getWebhook = (req, res) => {
-
     // Your verify token. Should be a random string.
     let VERIFY_TOKEN = MY_VERIFY_TOKEN;
 
@@ -36,23 +39,33 @@ let getWebhook = (req, res) => {
 };
 
 let postWebhook = (req, res) => {
-    // Parse the request body from the POST
     let body = req.body;
 
-    // Check the webhook event is from a Page subscription
+    // Checks this is an event from a page subscription
     if (body.object === 'page') {
+        // Iterates over each entry - there may be multiple if batched
+        body.entry.forEach(function (entry) {
+            //check the incoming message from primary app or not; if secondary app, exit
+            if (entry.standby) {
+                //if user's message is "back" or "exit", return the conversation to the bot
+                let webhook_standby = entry.standby[0];
+                if (webhook_standby && webhook_standby.message) {
+                    if (webhook_standby.message.text === "back" || webhook_standby.message.text === "exit") {
+                        // call function to return the conversation to the primary app
+                        // chatbotService.passThreadControl(webhook_standby.sender.id, "primary");
+                        chatbotService.takeControlConversation(webhook_standby.sender.id);
+                    }
+                }
 
-        // Iterate over each entry - there may be multiple if batched
-        body.entry.forEach(function(entry) {
+                return;
+            }
 
-            // Gets the body of the webhook event
+            //     // Gets the body of the webhook event
             let webhook_event = entry.messaging[0];
             console.log(webhook_event);
 
-
             // Get the sender PSID
             let sender_psid = webhook_event.sender.id;
-            console.log('Sender PSID: ' + sender_psid);
 
             // Check if the event is a message or postback and
             // pass the event to the appropriate handler function
@@ -61,29 +74,42 @@ let postWebhook = (req, res) => {
             } else if (webhook_event.postback) {
                 handlePostback(sender_psid, webhook_event.postback);
             }
-
         });
 
-        // Return a '200 OK' response to all events
+        // Returns a '200 OK' response to all requests
         res.status(200).send('EVENT_RECEIVED');
-
     } else {
-        // Return a '404 Not Found' if event is not from a page subscription
+        // Returns a '404 Not Found' if event is not from a page subscription
         res.sendStatus(404);
     }
-
 };
 
 // Handles messages events
-let handleMessage = (sender_psid, received_message) => {
+let handleMessage = async (sender_psid, received_message) => {
+    //check the incoming message is a quick reply?
+    if (received_message && received_message.quick_reply && received_message.quick_reply.payload) {
+        let payload = received_message.quick_reply.payload;
+        if (payload === "CATEGORIES") {
+            await chatbotService.sendCategories(sender_psid);
+
+        } else if (payload === "LOOKUP_ORDER") {
+            await chatbotService.sendLookupOrder(sender_psid);
+
+        } else if (payload === "TALK_AGENT") {
+            await chatbotService.requestTalkToAgent(sender_psid);
+        }
+
+        return;
+    }
+
+
     let response;
 
-    // Checks if the message contains text
+    // Check if the message contains text
     if (received_message.text) {
-        // Create the payload for a basic text message, which
-        // will be added to the body of our request to the Send API
+        // Create the payload for a basic text message
         response = {
-            "text": `You sent the message: "${received_message.text}". Now send me an attachment!`
+            "text": `You sent the message: "${received_message.text}". Now send me an image!`
         }
     } else if (received_message.attachments) {
         // Get the URL of the message attachment
@@ -115,53 +141,103 @@ let handleMessage = (sender_psid, received_message) => {
         }
     }
 
-    // Send the response message
-    callSendAPI(sender_psid, response);
+    // Sends the response message
+    await chatbotService.sendMessage(sender_psid, response);
 };
 
 // Handles messaging_postbacks events
-let handlePostback = (sender_psid, received_postback) => {
-    let response;
-
+let handlePostback = async (sender_psid, received_postback) => {
     // Get the payload for the postback
     let payload = received_postback.payload;
 
     // Set the response based on the postback payload
-    if (payload === 'yes') {
-        response = { "text": "Thanks!" }
-    } else if (payload === 'no') {
-        response = { "text": "Oops, try sending another image." }
+    switch (payload) {
+        case "GET_STARTED":
+        case "RESTART_CONVERSATION":
+            await chatbotService.sendMessageWelcomeNewUser(sender_psid);
+            break;
+        case "TALK_AGENT":
+            await chatbotService.requestTalkToAgent(sender_psid);
+            break;
+        case "SHOW_HEADPHONES":
+            await chatbotService.showHeadphones(sender_psid);
+            break;
+        case "SHOW_TV":
+            await chatbotService.showTVs(sender_psid);
+            break;
+        case "SHOW_PLAYSTATION":
+            await chatbotService.showPlaystation(sender_psid);
+            break;
+        case "BACK_TO_CATEGORIES":
+            await chatbotService.backToCategories(sender_psid);
+            break;
+        case "BACK_TO_MAIN_MENU":
+            await chatbotService.backToMainMenu(sender_psid);
+            break;
+        default:
+            console.log("run default switch case")
+
     }
-    // Send the message to acknowledge the postback
-    callSendAPI(sender_psid, response);
 };
 
-// Sends response messages via the Send API
-let callSendAPI = (sender_psid, response) => {
-    // Construct the message body
-    let request_body = {
-        "recipient": {
-            "id": sender_psid
-        },
-        "message": response
-    };
+let handleSetupProfile = async (req, res) => {
+    try {
+        await homepageService.handleSetupProfileAPI();
+        return res.redirect("/");
+    } catch (e) {
+        console.log(e);
+    }
+};
 
-    // Send the HTTP request to the Messenger Platform
-    request({
-        "uri": "https://graph.facebook.com/v6.0/me/messages",
-        "qs": { "access_token": PAGE_ACCESS_TOKEN },
-        "method": "POST",
-        "json": request_body
-    }, (err, res, body) => {
-        if (!err) {
-            console.log('message sent!')
-        } else {
-            console.error("Unable to send message:" + err);
-        }
+let getSetupProfilePage = (req, res) => {
+    return res.render("profile.ejs");
+};
+
+let getInfoOrderPage = (req, res) => {
+    let facebookAppId = process.env.FACEBOOK_APP_ID;
+    return res.render("infoOrder.ejs", {
+        facebookAppId: facebookAppId
     });
 };
-module.exports = {
-    getHomepage: getHomepage,
-    getWebhook: getWebhook,
-    postWebhook: postWebhook
+
+let setInfoOrder = async (req, res) => {
+    try {
+        let customerName = "";
+        if (req.body.customerName === "") {
+            customerName = "Empty";
+        } else customerName = req.body.customerName;
+
+        // I demo response with sample text
+        // you can check database for customer order's status
+
+        let response1 = {
+            "text": `---Info about your lookup order---
+            \nCustomer name: ${customerName}
+            \nEmail address: ${req.body.email}
+            \nOrder number: ${req.body.orderNumber}
+            `
+        };
+
+        let response2 = templateMessage.setInfoOrderTemplate();
+
+        await chatbotService.sendMessage(req.body.psid, response1);
+        await chatbotService.sendMessage(req.body.psid, response2);
+
+        return res.status(200).json({
+            message: "ok"
+        });
+    } catch (e) {
+        console.log(e);
+    }
 };
+
+module.exports = {
+    getHomePage: getHomePage,
+    getWebhook: getWebhook,
+    postWebhook: postWebhook,
+    handleSetupProfile: handleSetupProfile,
+    getSetupProfilePage: getSetupProfilePage,
+    getInfoOrderPage: getInfoOrderPage,
+    setInfoOrder: setInfoOrder
+};
+
